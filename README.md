@@ -400,3 +400,9 @@ internal/driver/           volume.Driver implementation orchestrating the above
 
 GCE API calls retry with exponential backoff and jitter; async operations are
 awaited with a configurable timeout.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
