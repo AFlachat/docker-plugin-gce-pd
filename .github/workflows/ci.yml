@@ -93,17 +93,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive version tag
+      - name: Derive version tag + lowercase owner
         id: ver
-        # refs/tags/v1.2.3 -> 1.2.3
-        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          # refs/tags/v1.2.3 -> 1.2.3
+          echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          # ghcr.io / Docker repository names must be lowercase; the GitHub owner
+          # may have uppercase (e.g. AFlachat), so fold it.
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build + push versioned tag (${{ matrix.arch }})
         run: |
           make plugin-push \
             ARCH=${{ matrix.arch }} \
             TAG=${{ steps.ver.outputs.tag }} \
-            REGISTRY=ghcr.io/${{ github.repository_owner }} \
+            REGISTRY=ghcr.io/${{ steps.ver.outputs.owner }} \
             PLUGIN_NAME=docker-plugin-gce-pd
 
       # Re-tag the same rootfs as the floating `latest-<arch>` and push it, so
@@ -111,8 +115,7 @@ jobs:
       # tracks the newest release. The rootfs from build/plugin-<arch> is reused.
       - name: Push latest tag (${{ matrix.arch }})
         run: |
-          OWNER=ghcr.io/${{ github.repository_owner }}
-          REF=$OWNER/docker-plugin-gce-pd:latest-${{ matrix.arch }}
+          REF=ghcr.io/${{ steps.ver.outputs.owner }}/docker-plugin-gce-pd:latest-${{ matrix.arch }}
           docker plugin rm -f "$REF" 2>/dev/null || true
           docker plugin create "$REF" build/plugin-${{ matrix.arch }}
           docker plugin push "$REF"
