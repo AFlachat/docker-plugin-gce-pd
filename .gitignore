@@ -3,7 +3,9 @@
 /dist/
 /build/
 /rootfs/
-docker-volume-gcepd
+# Binary built at the repo root (leading slash so it does NOT match the
+# cmd/docker-volume-gcepd/ source directory).
+/docker-volume-gcepd
 
 # Go
 *.test
