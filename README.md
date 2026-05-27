@@ -143,6 +143,33 @@ What happens to the PD depends on the volume's `reclaimPolicy` (see options):
 with the default `retain` the disk is **kept** in GCE and only forgotten
 locally; with `delete` the disk is deleted.
 
+### Resizing a volume
+
+The plugin does not resize volumes itself: `docker volume create` is idempotent
+on the name, so Docker ignores a new `size` given for an existing volume and the
+request never reaches the plugin. Resize the underlying PD directly instead.
+
+Persistent Disks can only **grow** (never shrink), online, while attached:
+
+```bash
+ZONE=$(curl -s -H 'Metadata-Flavor: Google' \
+  http://metadata.google.internal/computeMetadata/v1/instance/zone | awk -F/ '{print $NF}')
+
+# 1. Grow the PD in GCE (e.g. 10 -> 20 GiB)
+gcloud compute disks resize <volume-name> --zone "$ZONE" --size 20
+
+# 2. Grow the filesystem on the VM (the disk must be attached/mounted).
+#    Device is /dev/disk/by-id/google-<volume-name>; mountpoint is
+#    /var/lib/docker-gcepd/mounts/<volume-name>.
+sudo resize2fs $(readlink -f /dev/disk/by-id/google-<volume-name>)   # ext4
+sudo xfs_growfs /var/lib/docker-gcepd/mounts/<volume-name>            # xfs
+```
+
+`disks resize` needs `compute.disks.resize` on the VM's service account. After
+resizing, `docker volume inspect` may still show the old size until the next
+plugin restart (it is re-read from GCE at startup); the filesystem is already
+the new size.
+
 ### Options
 
 All options are passed via `--opt key=value` to `docker volume create`.
