@@ -23,9 +23,10 @@ type fakeDisks struct {
 	// state keyed by disk name
 	disks map[string]*computepb.Disk
 
-	insertCalls int
-	deleteCalls int
-	snapCalls   int
+	insertCalls    int
+	deleteCalls    int
+	snapCalls      int
+	setLabelsCalls int
 
 	// insertErr lets a test force the Insert API call to fail.
 	insertErr error
@@ -75,6 +76,14 @@ func (f *fakeDisks) List(ctx context.Context, req *computepb.ListDisksRequest) (
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeDisks) SetLabels(ctx context.Context, req *computepb.SetLabelsDiskRequest, _ ...gax.CallOption) (operation, error) {
+	f.setLabelsCalls++
+	if d, ok := f.disks[req.GetResource()]; ok {
+		d.Labels = req.GetZoneSetLabelsRequestResource().GetLabels()
+	}
+	return noopOp{}, nil
 }
 
 func (f *fakeDisks) Close() error { return nil }
@@ -218,6 +227,21 @@ func TestDeleteWithSnapshot(t *testing.T) {
 	}
 	if fd.deleteCalls != 1 {
 		t.Errorf("deleteCalls = %d, want 1", fd.deleteCalls)
+	}
+}
+
+func TestDeleteMarksDeletingLabelFirst(t *testing.T) {
+	c, fd, _ := testClient(t)
+	opts, _ := ParseDiskOptions(nil)
+	if _, err := c.CreateDisk(context.Background(), "vol1", opts); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteDisk(context.Background(), "vol1", false); err != nil {
+		t.Fatalf("DeleteDisk error = %v", err)
+	}
+	// The deleting label must have been set (via SetLabels) before delete.
+	if fd.setLabelsCalls != 1 {
+		t.Errorf("setLabelsCalls = %d, want 1 (mark deleting before delete)", fd.setLabelsCalls)
 	}
 }
 

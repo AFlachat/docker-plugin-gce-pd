@@ -80,6 +80,10 @@ type Driver struct {
 	// same volume; a single driver-wide lock is simplest and correct given the
 	// low call rate from docker.
 	mu sync.Mutex
+
+	// bg tracks background work (e.g. delete-after-Remove) so it can be awaited
+	// on shutdown.
+	bg sync.WaitGroup
 }
 
 // New builds a Driver from its collaborators. *state.Store satisfies
@@ -131,6 +135,12 @@ func (d *Driver) Create(req *volume.CreateRequest) error {
 	// re-imported yet, or one left over from a previous run). Adopt it instead of
 	// failing with a 409.
 	if existing, err := d.gce.GetDisk(ctx, req.Name); err == nil {
+		// A disk marked for deletion is being torn down (delete in progress, or
+		// interrupted and pending reconciliation). Refuse rather than adopt a
+		// half-deleted disk or race the delete.
+		if existing.Deleting() {
+			return fmt.Errorf("volume %q is still being deleted; retry once the delete completes", req.Name)
+		}
 		return d.adoptExistingDisk(req.Name, existing, opts)
 	} else if !errors.Is(err, gce.ErrDiskNotFound) {
 		return err
@@ -218,14 +228,48 @@ func (d *Driver) Remove(req *volume.RemoveRequest) error {
 		return d.state.Remove(req.Name)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
-	defer cancel()
-
-	if err := d.gce.DeleteDisk(ctx, req.Name, v.Options.SnapshotOnRemove); err != nil {
+	// reclaimPolicy=delete. Snapshotting and deleting a PD can take longer than
+	// the Docker daemon's plugin-request timeout, which would surface to the user
+	// as "context deadline exceeded" even though the work is progressing. So we
+	// drop the local record and acknowledge immediately, then run the GCE delete
+	// in the background with our own generous timeout.
+	//
+	// Safety: the disk keeps its managed-by label until actually deleted, so if
+	// the background op fails (or the plugin restarts mid-delete), startup
+	// reconciliation re-imports it — the disk is never silently lost.
+	if err := d.state.Remove(req.Name); err != nil {
 		return err
 	}
-	return d.state.Remove(req.Name)
+	d.deleteInBackground(req.Name, v.Options.SnapshotOnRemove)
+	return nil
 }
+
+// deleteInBackground snapshots (optionally) and deletes a PD off the Docker
+// request path, so a slow GCE delete never trips the daemon's request timeout.
+//
+// DeleteDisk marks the disk with the gcepd-deleting label before doing any slow
+// work, so a concurrent Create is refused and an interrupted delete is resumable
+// from reconciliation — there is no in-memory bookkeeping to keep here.
+func (d *Driver) deleteInBackground(name string, snapshotFirst bool) {
+	d.bg.Add(1)
+	go func() {
+		defer d.bg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
+		defer cancel()
+		if err := d.gce.DeleteDisk(ctx, name, snapshotFirst); err != nil {
+			// The disk still carries managed-by + gcepd-deleting, so reconciliation
+			// will resume the delete; surface the failure loudly for the operator.
+			log.Printf("gcepd: ERROR: background delete of disk %q failed: %v "+
+				"(it remains in GCE marked for deletion and will be retried at next startup)", name, err)
+			return
+		}
+		log.Printf("gcepd: background delete of disk %q complete", name)
+	}()
+}
+
+// WaitBackground blocks until in-flight background deletes finish. Intended for
+// graceful shutdown / tests.
+func (d *Driver) WaitBackground() { d.bg.Wait() }
 
 // Mount attaches the disk to this VM, formats it if blank, mounts it, and
 // increments the reference count. Repeated mounts of the same volume reuse the

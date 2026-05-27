@@ -262,6 +262,50 @@ func TestCreateRejectsExistingDiskWithMismatchedSize(t *testing.T) {
 	}
 }
 
+func TestCreateRefusesDiskBeingDeleted(t *testing.T) {
+	d, g, _, _ := newTestDriver(t)
+	// Disk exists, ours, but marked for deletion.
+	g.disks["delvol"] = &gce.DiskInfo{
+		Name: "delvol", SizeGB: 10, Type: "pd-balanced", Status: "READY",
+		Labels: map[string]string{
+			gce.ManagedByLabelKey: gce.ManagedByLabelValue,
+			gce.DeletingLabelKey:  "true",
+		},
+	}
+	err := d.Create(createReq("delvol", map[string]string{"size": "10"}))
+	if err == nil {
+		t.Fatal("Create must refuse a disk still being deleted")
+	}
+	if g.createCalls != 0 {
+		t.Errorf("must not create while delete in progress, got %d", g.createCalls)
+	}
+}
+
+func TestReconcileResumesInterruptedDelete(t *testing.T) {
+	d, g, _, st := newTestDriver(t)
+	// A disk whose delete was interrupted: managed + marked deleting, not in state.
+	g.disks["delvol"] = &gce.DiskInfo{
+		Name: "delvol", SizeGB: 10, Type: "pd-balanced", Status: "READY",
+		Labels: map[string]string{
+			gce.ManagedByLabelKey: gce.ManagedByLabelValue,
+			gce.DeletingLabelKey:  "true",
+		},
+	}
+	if err := d.Reconcile(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	d.WaitBackground()
+
+	// It must NOT be imported as an available volume...
+	if _, ok := st.Get("delvol"); ok {
+		t.Error("a disk marked deleting must not be imported as a volume")
+	}
+	// ...and its delete must have been resumed.
+	if g.deleteCalls != 1 {
+		t.Errorf("reconcile should resume the delete, deleteCalls = %d", g.deleteCalls)
+	}
+}
+
 func TestMountUnmountRefCounting(t *testing.T) {
 	d, g, m, st := newTestDriver(t)
 	if err := d.Create(createReq("vol1", nil)); err != nil {
@@ -357,11 +401,14 @@ func TestRemoveDeletePolicyDeletesDiskAndState(t *testing.T) {
 	if err := d.Remove(&volume.RemoveRequest{Name: "vol1"}); err != nil {
 		t.Fatal(err)
 	}
-	if g.deleteCalls != 1 {
-		t.Errorf("deleteCalls = %d, want 1", g.deleteCalls)
-	}
+	// State is dropped synchronously so Docker sees the volume gone immediately.
 	if _, ok := st.Get("vol1"); ok {
-		t.Error("state record should be gone after Remove")
+		t.Error("state record should be gone right after Remove returns")
+	}
+	// The actual GCE delete runs in the background; wait for it.
+	d.WaitBackground()
+	if g.deleteCalls != 1 {
+		t.Errorf("deleteCalls = %d, want 1 (after background completes)", g.deleteCalls)
 	}
 }
 

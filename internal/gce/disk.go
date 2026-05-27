@@ -30,6 +30,10 @@ type DiskInfo struct {
 // GCE exposes this as the Users list (each entry is an instance self-link).
 func (d DiskInfo) Attached() bool { return len(d.Users) > 0 }
 
+// Deleting reports whether this disk has been marked for deletion (a delete is
+// in progress or was interrupted).
+func (d DiskInfo) Deleting() bool { return d.Labels[DeletingLabelKey] == "true" }
+
 // CreateDisk provisions a new zonal Persistent Disk in the client's zone,
 // tagged with the managed-by label. It does NOT attach the disk (lazy attach
 // happens at Mount). It waits for the create operation to complete.
@@ -113,6 +117,14 @@ func (c *Client) DeleteDisk(ctx context.Context, name string, snapshotFirst bool
 		return fmt.Errorf("refusing to delete disk %q: still attached to %v", name, info.Users)
 	}
 
+	// Mark the disk as deleting before any slow work, so a concurrent Create is
+	// refused and an interrupted delete is resumable from reconciliation.
+	if !info.Deleting() {
+		if err := c.markDeleting(ctx, info); err != nil {
+			return fmt.Errorf("mark disk %q deleting: %w", name, err)
+		}
+	}
+
 	if snapshotFirst {
 		if err := c.snapshotDisk(ctx, name); err != nil {
 			return fmt.Errorf("snapshot before delete of %q: %w", name, err)
@@ -187,6 +199,49 @@ func (c *Client) snapshotDisk(ctx context.Context, name string) error {
 	}
 	return retry(ctx, c.backoff, func() error {
 		op, err := c.disks.CreateSnapshot(ctx, req)
+		if err != nil {
+			return err
+		}
+		return c.waitOp(ctx, op)
+	})
+}
+
+// markDeleting sets the gcepd-deleting=true label on the disk, preserving its
+// existing labels. SetLabels needs the current label fingerprint for optimistic
+// locking, so we read it from the (just-fetched) DiskInfo's source via a Get.
+func (c *Client) markDeleting(ctx context.Context, info *DiskInfo) error {
+	// Re-Get the raw disk to obtain a fresh LabelFingerprint.
+	getReq := &computepb.GetDiskRequest{Project: c.projectID, Zone: c.zone, Disk: info.Name}
+	var fingerprint string
+	labels := map[string]string{}
+	err := retry(ctx, c.backoff, func() error {
+		d, err := c.disks.Get(ctx, getReq)
+		if err != nil {
+			return err
+		}
+		fingerprint = d.GetLabelFingerprint()
+		labels = map[string]string{}
+		for k, v := range d.GetLabels() {
+			labels[k] = v
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	labels[DeletingLabelKey] = "true"
+
+	req := &computepb.SetLabelsDiskRequest{
+		Project:  c.projectID,
+		Zone:     c.zone,
+		Resource: info.Name,
+		ZoneSetLabelsRequestResource: &computepb.ZoneSetLabelsRequest{
+			LabelFingerprint: proto.String(fingerprint),
+			Labels:           labels,
+		},
+	}
+	return retry(ctx, c.backoff, func() error {
+		op, err := c.disks.SetLabels(ctx, req)
 		if err != nil {
 			return err
 		}

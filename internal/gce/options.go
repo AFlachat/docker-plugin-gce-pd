@@ -14,6 +14,13 @@ const (
 	ManagedByLabelValue = "docker-gcepd"
 )
 
+// DeletingLabelKey marks a disk whose deletion is in progress. It is set before
+// the (possibly slow, background) snapshot+delete so that a concurrent Create is
+// refused and, if the plugin restarts mid-delete, reconciliation can resume the
+// deletion rather than re-import the disk as an available volume. GCE label
+// values must match [a-z0-9_-]*, so we use "true".
+const DeletingLabelKey = "gcepd-deleting"
+
 // GCE resource naming rules for disks: RFC1035-ish.
 //   - 1-63 chars
 //   - lowercase letter first

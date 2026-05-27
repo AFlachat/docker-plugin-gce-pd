@@ -33,6 +33,13 @@ func (d *Driver) Reconcile(ctx context.Context) error {
 	// than zero values.
 	byName := make(map[string]state.VolumeOptions, len(disks))
 	for _, dk := range disks {
+		// A disk marked deleting had an interrupted delete. Don't import it as an
+		// available volume; resume its deletion in the background instead.
+		if dk.Deleting() {
+			log.Printf("gcepd: reconcile: resuming interrupted delete of disk %q", dk.Name)
+			d.deleteInBackground(dk.Name, false) // snapshot (if any) was taken pre-interruption
+			continue
+		}
 		names = append(names, dk.Name)
 		byName[dk.Name] = state.VolumeOptions{
 			SizeGB: dk.SizeGB,

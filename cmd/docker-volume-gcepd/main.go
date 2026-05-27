@@ -105,7 +105,12 @@ func run() error {
 	// 6. Serve the volume plugin API. ServeUnix blocks until the socket closes.
 	h := volume.NewHandler(d)
 	log.Printf("serving on /run/docker/plugins/%s.sock", socketName)
-	return h.ServeUnix(socketName, rootGID)
+	err = h.ServeUnix(socketName, rootGID)
+
+	// Best-effort: let in-flight background deletes finish before exiting. Any
+	// that don't are recovered by reconciliation on next startup.
+	d.WaitBackground()
+	return err
 }
 
 // resolveScope reads GCEPD_SCOPE, defaulting to local and rejecting unknowns.

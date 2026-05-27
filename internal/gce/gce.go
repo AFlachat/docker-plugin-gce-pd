@@ -50,6 +50,7 @@ type diskAPI interface {
 	Delete(ctx context.Context, req *computepb.DeleteDiskRequest, opts ...gax.CallOption) (operation, error)
 	List(ctx context.Context, req *computepb.ListDisksRequest) ([]*computepb.Disk, error)
 	CreateSnapshot(ctx context.Context, req *computepb.CreateSnapshotDiskRequest, opts ...gax.CallOption) (operation, error)
+	SetLabels(ctx context.Context, req *computepb.SetLabelsDiskRequest, opts ...gax.CallOption) (operation, error)
 	Close() error
 }
 
@@ -221,6 +222,9 @@ func (a *disksAdapter) Delete(ctx context.Context, req *computepb.DeleteDiskRequ
 }
 func (a *disksAdapter) CreateSnapshot(ctx context.Context, req *computepb.CreateSnapshotDiskRequest, opts ...gax.CallOption) (operation, error) {
 	return a.c.CreateSnapshot(ctx, req, opts...)
+}
+func (a *disksAdapter) SetLabels(ctx context.Context, req *computepb.SetLabelsDiskRequest, opts ...gax.CallOption) (operation, error) {
+	return a.c.SetLabels(ctx, req, opts...)
 }
 func (a *disksAdapter) Close() error { return a.c.Close() }
 
