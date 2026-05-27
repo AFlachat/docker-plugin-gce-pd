@@ -10,6 +10,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -98,9 +99,11 @@ func mountpointFor(name string) string {
 
 // ---- volume.Driver implementation ----
 
-// Create provisions a GCE disk and records it. It is idempotent: a repeat
-// Create with matching options returns success; with conflicting options it
-// errors. The disk is NOT attached here (lazy attach at Mount).
+// Create provisions a GCE disk and records it. It is idempotent against both
+// local state and GCE reality: a repeat Create with matching options is a no-op,
+// and a disk that already exists in GCE (e.g. a retained PD not yet re-imported,
+// or one created out-of-band) is adopted rather than re-created. Conflicting
+// options error. The disk is NOT attached here (lazy attach at Mount).
 func (d *Driver) Create(req *volume.CreateRequest) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -113,7 +116,7 @@ func (d *Driver) Create(req *volume.CreateRequest) error {
 		return err
 	}
 
-	// Idempotency: if we already track this volume, compare options.
+	// Idempotency vs local state: if we already track this volume, compare options.
 	if existing, ok := d.state.Get(req.Name); ok {
 		if optionsMatch(existing.Options, opts) {
 			return nil
@@ -123,6 +126,15 @@ func (d *Driver) Create(req *volume.CreateRequest) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), opTimeout)
 	defer cancel()
+
+	// Idempotency vs GCE: the disk may exist already (a retained PD we haven't
+	// re-imported yet, or one left over from a previous run). Adopt it instead of
+	// failing with a 409.
+	if existing, err := d.gce.GetDisk(ctx, req.Name); err == nil {
+		return d.adoptExistingDisk(req.Name, existing, opts)
+	} else if !errors.Is(err, gce.ErrDiskNotFound) {
+		return err
+	}
 
 	info, err := d.gce.CreateDisk(ctx, req.Name, opts)
 	if err != nil {
@@ -145,6 +157,38 @@ func (d *Driver) Create(req *volume.CreateRequest) error {
 		return fmt.Errorf("create %q: state write failed, disk rolled back: %w", req.Name, err)
 	}
 	_ = info // info already reflected in opts; kept for future status reporting
+	return nil
+}
+
+// adoptExistingDisk records an already-existing GCE disk into local state under
+// the requested options, instead of trying to (re-)create it. It only adopts a
+// disk this plugin manages (carrying the managed-by label) and whose physical
+// attributes (size, type) are compatible with the requested options; otherwise
+// it errors rather than silently taking over a foreign or mismatched disk.
+func (d *Driver) adoptExistingDisk(name string, info *gce.DiskInfo, opts gce.DiskOptions) error {
+	if info.Labels[gce.ManagedByLabelKey] != gce.ManagedByLabelValue {
+		return fmt.Errorf("disk %q already exists in GCE but is not managed by this plugin "+
+			"(missing %s=%s label); refusing to adopt it", name, gce.ManagedByLabelKey, gce.ManagedByLabelValue)
+	}
+	if info.SizeGB != opts.SizeGB || info.Type != opts.Type {
+		return fmt.Errorf("disk %q already exists in GCE with size=%dGiB type=%s, "+
+			"which differs from the requested size=%dGiB type=%s",
+			name, info.SizeGB, info.Type, opts.SizeGB, opts.Type)
+	}
+
+	// Compatible: persist a local record so Mount/Remove work. FSType isn't
+	// readable from GCE metadata, so we keep the requested value; EnsureFormatted
+	// probes the real filesystem at Mount and never reformats a non-blank disk.
+	rec := state.Volume{
+		Name:      name,
+		Options:   toStateOptions(opts),
+		Status:    state.StatusCreated,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := d.state.Add(rec); err != nil {
+		return fmt.Errorf("adopt existing disk %q: %w", name, err)
+	}
+	log.Printf("gcepd: adopted pre-existing disk %q into local state", name)
 	return nil
 }
 

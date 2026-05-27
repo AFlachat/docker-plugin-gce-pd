@@ -37,7 +37,10 @@ func (f *fakeGCE) CreateDisk(_ context.Context, name string, opts gce.DiskOption
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
-	info := &gce.DiskInfo{Name: name, SizeGB: opts.SizeGB, Type: opts.Type, Status: "READY"}
+	info := &gce.DiskInfo{
+		Name: name, SizeGB: opts.SizeGB, Type: opts.Type, Status: "READY",
+		Labels: map[string]string{gce.ManagedByLabelKey: gce.ManagedByLabelValue},
+	}
 	f.disks[name] = info
 	return info, nil
 }
@@ -204,6 +207,58 @@ func TestCreateRollsBackOnStateFailure(t *testing.T) {
 	}
 	if _, ok := g.disks["vol1"]; ok {
 		t.Error("disk should have been rolled back (deleted) in GCE")
+	}
+}
+
+func TestCreateAdoptsExistingManagedDisk(t *testing.T) {
+	d, g, _, st := newTestDriver(t)
+	// Simulate a disk that exists in GCE (e.g. a retained PD) but is NOT in local
+	// state: managed-by label present, no local record.
+	g.disks["testvol"] = &gce.DiskInfo{
+		Name: "testvol", SizeGB: 10, Type: "pd-balanced", Status: "READY",
+		Labels: map[string]string{gce.ManagedByLabelKey: gce.ManagedByLabelValue},
+	}
+
+	// Create with matching options must adopt, not re-create (no 409).
+	err := d.Create(createReq("testvol", map[string]string{"size": "10", "type": "pd-balanced"}))
+	if err != nil {
+		t.Fatalf("Create should adopt the existing disk, got %v", err)
+	}
+	if g.createCalls != 0 {
+		t.Errorf("must NOT call CreateDisk when disk already exists, got %d", g.createCalls)
+	}
+	if _, ok := st.Get("testvol"); !ok {
+		t.Error("adopted disk should be recorded in local state")
+	}
+}
+
+func TestCreateRejectsExistingForeignDisk(t *testing.T) {
+	d, g, _, _ := newTestDriver(t)
+	// Disk exists but lacks the managed-by label → not ours.
+	g.disks["foreign"] = &gce.DiskInfo{Name: "foreign", SizeGB: 10, Type: "pd-balanced", Status: "READY"}
+
+	err := d.Create(createReq("foreign", map[string]string{"size": "10"}))
+	if err == nil {
+		t.Fatal("Create must refuse to adopt a disk not managed by the plugin")
+	}
+	if g.createCalls != 0 {
+		t.Errorf("must not create over a foreign disk, got %d", g.createCalls)
+	}
+}
+
+func TestCreateRejectsExistingDiskWithMismatchedSize(t *testing.T) {
+	d, g, _, _ := newTestDriver(t)
+	g.disks["testvol"] = &gce.DiskInfo{
+		Name: "testvol", SizeGB: 10, Type: "pd-balanced", Status: "READY",
+		Labels: map[string]string{gce.ManagedByLabelKey: gce.ManagedByLabelValue},
+	}
+	// Request a different size than the existing disk.
+	err := d.Create(createReq("testvol", map[string]string{"size": "50", "type": "pd-balanced"}))
+	if err == nil {
+		t.Fatal("Create must error when the existing disk's size differs")
+	}
+	if g.createCalls != 0 {
+		t.Errorf("must not create, got %d", g.createCalls)
 	}
 }
 
