@@ -1,0 +1,15 @@
+# Build artifacts
+/bin/
+/dist/
+/build/
+/rootfs/
+docker-volume-gcepd
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Editor / OS
+.DS_Store
+*.swp

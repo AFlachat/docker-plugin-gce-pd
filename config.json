@@ -1,0 +1,50 @@
+{
+  "description": "Docker volume driver backed by GCE Persistent Disks (zonal).",
+  "documentation": "https://github.com/aflachat/docker-plugin-gce-pd",
+  "entrypoint": ["/usr/bin/docker-volume-gcepd"],
+  "network": {
+    "type": "host"
+  },
+  "interface": {
+    "types": ["docker.volumedriver/1.0"],
+    "socket": "gcepd.sock"
+  },
+  "linux": {
+    "capabilities": [
+      "CAP_SYS_ADMIN"
+    ],
+    "allowAllDevices": true,
+    "devices": null
+  },
+  "propagatedmount": "/var/lib/docker-gcepd/mounts",
+  "mounts": [
+    {
+      "name": "dev",
+      "description": "Host /dev so attached disks appear as /dev/disk/by-id/google-<name>",
+      "source": "/dev",
+      "destination": "/dev",
+      "type": "bind",
+      "options": ["rbind", "rshared"]
+    }
+  ],
+  "env": [
+    {
+      "name": "GCEPD_KEYFILE",
+      "description": "Optional path (inside the plugin rootfs) to a service-account JSON key, overriding the VM's default credentials.",
+      "value": "",
+      "settable": ["value"]
+    },
+    {
+      "name": "GCEPD_SCOPE",
+      "description": "Volume scope: 'local' (default, one volume per VM) or 'global' (Swarm mode, same-zone failover that detaches the disk from a down/old VM and re-attaches it here).",
+      "value": "local",
+      "settable": ["value"]
+    },
+    {
+      "name": "GCEPD_FORCE_DETACH_AFTER",
+      "description": "Grace window (Go duration, e.g. 30s) to wait for a clean detach from a still-running holder during failover before forcing. Only used when GCEPD_SCOPE=global.",
+      "value": "30s",
+      "settable": ["value"]
+    }
+  ]
+}
