@@ -109,13 +109,3 @@ jobs:
             TAG=${{ steps.ver.outputs.tag }} \
             REGISTRY=ghcr.io/${{ steps.ver.outputs.owner }} \
             PLUGIN_NAME=docker-plugin-gce-pd
-
-      # Re-tag the same rootfs as the floating `latest-<arch>` and push it, so
-      # `docker plugin install .../docker-plugin-gce-pd:latest-amd64` always
-      # tracks the newest release. The rootfs from build/plugin-<arch> is reused.
-      - name: Push latest tag (${{ matrix.arch }})
-        run: |
-          REF=ghcr.io/${{ steps.ver.outputs.owner }}/docker-plugin-gce-pd:latest-${{ matrix.arch }}
-          docker plugin rm -f "$REF" 2>/dev/null || true
-          docker plugin create "$REF" build/plugin-${{ matrix.arch }}
-          docker plugin push "$REF"

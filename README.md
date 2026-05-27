@@ -91,17 +91,16 @@ docker plugin set gcepd GCEPD_KEYFILE=/run/secrets/gcepd-sa.json
 
 ## Installation
 
-Managed plugins are single-architecture, so images are published per arch under
-a suffixed tag. Pick the one matching your VM (`amd64` for most GCE VMs, `arm64`
-for Tau T2A):
+Managed plugins are single-architecture, so images are published per arch and
+per release under a `<version>-<arch>` tag. Pick the one matching your VM
+(`amd64` for most GCE VMs, `arm64` for Tau T2A) and a released version:
 
 ```bash
-docker plugin install ghcr.io/aflachat/docker-plugin-gce-pd:latest-amd64 --alias gcepd
+docker plugin install ghcr.io/aflachat/docker-plugin-gce-pd:1.0.0-amd64 --alias gcepd
 docker plugin enable gcepd
 ```
 
-Pin a specific release instead of `latest` with a version tag, e.g.
-`:1.2.3-amd64`.
+See the repository's released tags for available versions.
 
 `--alias gcepd` lets you use the short driver name `--driver gcepd`. Verify:
 
@@ -206,7 +205,7 @@ detaches the disk from A and attaches it to B.
 Enable it per node (set on the plugin, then it sticks):
 
 ```bash
-docker plugin install ghcr.io/aflachat/docker-plugin-gce-pd:latest-amd64 --alias gcepd --disable
+docker plugin install ghcr.io/aflachat/docker-plugin-gce-pd:1.0.0-amd64 --alias gcepd --disable
 docker plugin set gcepd GCEPD_SCOPE=global
 docker plugin enable gcepd
 ```
